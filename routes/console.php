@@ -14,9 +14,10 @@ Artisan::command('inspire', function () {
 | Actualización automática de precios
 |--------------------------------------------------------------------------
 |
-| Ejecuta el motor cada 5 minutos en modo escritura (sin --dry-run).
+| Ejecuta el motor cada 1 minuto en modo escritura (sin --dry-run).
+| Fase 6: Arquitectura híbrida con trigger para respuesta casi en tiempo real.
 |
-| withoutOverlapping(10): si una corrida tarda más de 5 minutos, la
+| withoutOverlapping(10): si una corrida tarda más de 1 minuto, la
 | siguiente no se dispara. El bloqueo expira a los 10 minutos para que
 | un proceso que muera de forma anormal no bloquee el scheduler todo el día.
 |
@@ -28,7 +29,7 @@ Artisan::command('inspire', function () {
 */
 
 Schedule::command('precios:recalcular')
-    ->everyFiveMinutes()
+    ->everyMinute()
     ->withoutOverlapping(10)
     ->before(function (): void {
         Log::info('scheduler: inicio automático de precios:recalcular');

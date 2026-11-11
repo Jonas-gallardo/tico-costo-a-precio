@@ -16,19 +16,21 @@ class RecalcularPrecios extends Command
                             {--dry-run : Solo consulta y muestra los costos pendientes, sin escribir en saArtPrecio}
                             {--tipo-doc= : Tipo de documento del histórico (PROV, PROC, REPO...). Por defecto PROFIT_TIPO_DOC}
                             {--co-precio= : Filtra por código de precio (01, 02, 03, 04)}
-                            {--limit= : Máximo de registros a consultar}';
+                            {--limit= : Máximo de registros a consultar}
+                            {--scan-mode : Usa modo escaneo (anti-join) en lugar de modo alerta (trigger). Fallback si trigger no está instalado}';
 
     /**
      * @var string
      */
     protected $description = 'Calcula y registra en saArtPrecio el precio vigente de los costos de entrada pendientes';
 
-    public function handle(RecalcularPreciosService $service): int
+    public function handle(): int
     {
         $tipoDoc = strtoupper(trim((string) ($this->option('tipo-doc') ?: config('profit.tipo_doc_default', 'PROV'))));
         $coPrecio = $this->option('co-precio') !== null ? trim((string) $this->option('co-precio')) : null;
         $limit = $this->option('limit') !== null ? (int) $this->option('limit') : null;
         $dryRun = (bool) $this->option('dry-run');
+        $modoEscaneo = (bool) $this->option('scan-mode');
 
         $permitidos = (array) config('profit.tipos_doc_entrada', []);
         if ($permitidos !== [] && ! in_array($tipoDoc, $permitidos, true)) {
@@ -41,6 +43,12 @@ class RecalcularPrecios extends Command
         }
 
         try {
+            $service = new RecalcularPreciosService(
+                connection: null,
+                tipoDoc: $tipoDoc,
+                modoEscaneo: $modoEscaneo,
+            );
+
             $resultado = $service->procesar($dryRun, $tipoDoc, $coPrecio, $limit);
 
             $registros = $resultado['registros'] ?? collect();
@@ -70,6 +78,7 @@ class RecalcularPrecios extends Command
 
             $this->newLine();
             $this->line('Modo: '.($resultado['dry_run'] ? '<fg=yellow>DRY-RUN (sin escritura)</>' : '<fg=red>ESCRITURA</>'));
+            $this->line('Modo de detección: '.($resultado['modo'] === 'escaneo' ? '<fg=cyan>ESCANEO (anti-join)</>' : '<fg=green>ALERTA (trigger)</>'));
             $this->line('Tipo de documento: '.$resultado['tipo_doc']);
             $this->line('Conexión: '.$service->connection());
             $this->line('Registros pendientes: '.$resultado['total_pendientes']);

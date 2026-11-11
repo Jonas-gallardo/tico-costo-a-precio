@@ -20,6 +20,11 @@ use Illuminate\Support\Facades\Log;
  *   - Cierre de vigencia anterior (hasta = NOW()) e INSERT del nuevo precio
  *     dentro de la MISMA transacción.
  *
+ * Fase 6 (Arquitectura Híbrida):
+ *   - Modo alerta (default): lee desde dbo.saPreciosAlerta donde procesado=0.
+ *   - Modo escaneo (fallback): usa anti-join original si trigger no está instalado.
+ *   - Marca alertas como procesadas=1 después de insertar precio.
+ *
  * Decisiones acordadas con el cliente:
  *   - Se ignora la validación de topes/políticas (NMMI, NMMS, NRA) del SP.
  *   - Se procesan todos los códigos de precio con margen configurado.
@@ -31,6 +36,7 @@ class RecalcularPreciosService
     public function __construct(
         private readonly ?string $connection = null,
         private readonly ?string $tipoDoc = null,
+        private readonly bool $modoEscaneo = false,
     ) {
     }
 
@@ -44,8 +50,66 @@ class RecalcularPreciosService
         return $this->tipoDoc ?? (string) config('profit.tipo_doc_default', 'PROV');
     }
 
+    public function modoEscaneo(): bool
+    {
+        return $this->modoEscaneo;
+    }
+
     /**
-     * Costos de entrada que requieren un precio nuevo.
+     * Costos de entrada que requieren un precio nuevo (modo alerta).
+     *
+     * Lee desde dbo.saPreciosAlerta donde procesado=0.
+     * Join con las tablas necesarias para obtener datos del costo.
+     *
+     * @return Collection<int, object>
+     */
+    public function costosPendientesAlerta(
+        ?string $tipoDoc = null,
+        ?string $coPrecio = null,
+        ?int $limit = null
+    ): Collection {
+        $tipoDoc = $tipoDoc ?: $this->tipoDoc();
+
+        $query = DB::connection($this->connection())
+            ->table('dbo.saPreciosAlerta as alerta')
+            ->join('dbo.saCostoHistoricoEntrada as h', 'h.cod_costo_historico_entrada', '=', 'alerta.cod_costo_historico_entrada')
+            ->join('dbo.saArticulo as a', 'a.rowguid', '=', 'h.cod_articulo_rowguid')
+            ->join('dbo.saArtMargen as m', 'm.co_art', '=', 'a.co_art')
+            ->select([
+                'alerta.id as alerta_id',
+                'h.cod_costo_historico_entrada as id_costo',
+                'h.tipo_doc',
+                'h.cod_almacen',
+                'h.costo',
+                'h.fecha_emision',
+                'h.fecha_registro',
+                'a.co_art',
+                'a.art_des',
+                'a.co_lin',
+                'a.co_subl',
+                'a.co_cat',
+                'a.anulado',
+                'm.co_precio',
+                'm.monto_min',
+                'm.monto_max',
+            ])
+            ->where('alerta.procesado', 0)
+            ->where('h.tipo_doc', $tipoDoc)
+            ->where('a.anulado', 0);
+
+        if ($coPrecio !== null && $coPrecio !== '') {
+            $query->where('m.co_precio', $coPrecio);
+        }
+
+        if ($limit !== null && $limit > 0) {
+            $query->limit($limit);
+        }
+
+        return $query->get();
+    }
+
+    /**
+     * Costos de entrada que requieren un precio nuevo (modo escaneo/fallback).
      *
      * Se considera pendiente cuando no existe un precio vigente (hasta NULL)
      * para el mismo (co_art, co_precio) creado después de la fecha de
@@ -149,6 +213,7 @@ class RecalcularPreciosService
     ): array {
         $inicio = microtime(true);
         $tipoDoc = $tipoDoc ?: $this->tipoDoc();
+        $usarModoEscaneo = $this->modoEscaneo();
 
         Log::info('recalcular-precios: inicio', [
             'dry_run' => $dryRun,
@@ -156,15 +221,19 @@ class RecalcularPreciosService
             'co_precio' => $coPrecio,
             'limit' => $limit,
             'connection' => $this->connection(),
+            'modo' => $usarModoEscaneo ? 'escaneo' : 'alerta',
         ]);
 
         if ($dryRun) {
-            $pendientes = $this->costosPendientes($tipoDoc, $coPrecio, $limit);
+            $pendientes = $usarModoEscaneo
+                ? $this->costosPendientes($tipoDoc, $coPrecio, $limit)
+                : $this->costosPendientesAlerta($tipoDoc, $coPrecio, $limit);
             $this->anotarPrecioCalculado($pendientes);
 
             $resultado = [
                 'dry_run' => true,
                 'tipo_doc' => $tipoDoc,
+                'modo' => $usarModoEscaneo ? 'escaneo' : 'alerta',
                 'total_pendientes' => $pendientes->count(),
                 'insertados' => 0,
                 'cerrados' => 0,
@@ -173,8 +242,10 @@ class RecalcularPreciosService
         } else {
             // Lectura + UPDATE + INSERT en una sola transacción atómica.
             $resultado = DB::connection($this->connection())
-                ->transaction(function () use ($tipoDoc, $coPrecio, $limit): array {
-                    $pendientes = $this->costosPendientes($tipoDoc, $coPrecio, $limit);
+                ->transaction(function () use ($tipoDoc, $coPrecio, $limit, $usarModoEscaneo): array {
+                    $pendientes = $usarModoEscaneo
+                        ? $this->costosPendientes($tipoDoc, $coPrecio, $limit)
+                        : $this->costosPendientesAlerta($tipoDoc, $coPrecio, $limit);
                     $this->anotarPrecioCalculado($pendientes);
 
                     $ahora = Carbon::now();
@@ -186,6 +257,11 @@ class RecalcularPreciosService
 
                         $cerrados += $this->cerrarVigenciaAnterior($fila, $ahora);
                         $this->insertarPrecio($fila, $precio, $ahora);
+
+                        // Si estamos en modo alerta, marcar como procesada
+                        if (! $usarModoEscaneo && isset($fila->alerta_id)) {
+                            $this->marcarAlertaProcesada($fila->alerta_id);
+                        }
 
                         $insertados++;
 
@@ -201,6 +277,7 @@ class RecalcularPreciosService
                     return [
                         'dry_run' => false,
                         'tipo_doc' => $tipoDoc,
+                        'modo' => $usarModoEscaneo ? 'escaneo' : 'alerta',
                         'total_pendientes' => $pendientes->count(),
                         'insertados' => $insertados,
                         'cerrados' => $cerrados,
@@ -213,6 +290,7 @@ class RecalcularPreciosService
 
         Log::info('recalcular-precios: fin', [
             'dry_run' => $resultado['dry_run'],
+            'modo' => $resultado['modo'],
             'total_pendientes' => $resultado['total_pendientes'],
             'insertados' => $resultado['insertados'],
             'cerrados' => $resultado['cerrados'],
@@ -284,5 +362,16 @@ class RecalcularPreciosService
                 'co_mone' => config('profit.co_mone', 'USD'),
                 'Inactivo' => 0,
             ]);
+    }
+
+    /**
+     * Marca una alerta como procesada.
+     */
+    private function marcarAlertaProcesada(int $alertaId): void
+    {
+        DB::connection($this->connection())
+            ->table('dbo.saPreciosAlerta')
+            ->where('id', $alertaId)
+            ->update(['procesado' => 1]);
     }
 }
