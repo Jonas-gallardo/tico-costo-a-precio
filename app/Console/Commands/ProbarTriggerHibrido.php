@@ -4,16 +4,25 @@ namespace App\Console\Commands;
 
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 
 class ProbarTriggerHibrido extends Command
 {
-    protected $signature = 'profit:probar-trigger-hibrido';
+    protected $signature = 'profit:probar-trigger-hibrido
+                            {--force : Permite ejecutar en producción (NO recomendado)}';
 
-    protected $description = 'Inserta un costo de prueba y verifica que el trigger funcione';
+    protected $description = 'Inserta un costo de prueba y verifica que el trigger funcione (SOLO entornos no productivos)';
 
     public function handle(): int
     {
+        // Salvaguarda: este comando escribe datos de prueba y cierra vigencias.
+        // Nunca debe ejecutarse en producción por accidente.
+        if (app()->environment('production') && ! $this->option('force')) {
+            $this->error('Entorno PRODUCCIÓN detectado. Este comando es SOLO para pruebas.');
+            $this->error('Si realmente necesitas ejecutarlo, usa --force (bajo tu responsabilidad).');
+
+            return self::FAILURE;
+        }
+
         $this->info('Obteniendo un artículo existente para la prueba...');
 
         // Obtener un artículo existente
@@ -24,6 +33,7 @@ class ProbarTriggerHibrido extends Command
 
         if (! $articulo) {
             $this->error('No se encontró ningún artículo');
+
             return self::FAILURE;
         }
 
@@ -37,6 +47,7 @@ class ProbarTriggerHibrido extends Command
 
         if (! $margen) {
             $this->error('El artículo no tiene margen configurado');
+
             return self::FAILURE;
         }
 
@@ -89,6 +100,7 @@ class ProbarTriggerHibrido extends Command
             $this->info('✓ Costo insertado con GUID: '.$codCosto);
         } catch (\Exception $e) {
             $this->error('✗ Error al insertar costo: '.$e->getMessage());
+
             return self::FAILURE;
         }
 
@@ -107,6 +119,7 @@ class ProbarTriggerHibrido extends Command
             $this->line('  - Fecha alerta: '.$alerta->fecha_alerta);
         } else {
             $this->error('✗ El trigger NO creó la alerta. Verificar que el trigger esté instalado.');
+
             return self::FAILURE;
         }
 

@@ -8,63 +8,53 @@ use Illuminate\Support\Facades\File;
 
 class InstalarTriggerHibrido extends Command
 {
-    protected $signature = 'profit:instalar-trigger-hibrido';
+    protected $signature = 'profit:instalar-trigger-hibrido
+                            {--force : Ejecuta sin pedir confirmación (necesario en producción)}';
 
-    protected $description = 'Crea la tabla saPreciosAlerta y el trigger TR_CostoEntrada_AlertaPrecio en SQL Server';
+    protected $description = 'Crea (si no existe) la tabla saPreciosAlerta y el trigger TR_CostoEntrada_AlertaPrecio en SQL Server';
 
     public function handle(): int
     {
+        // Salvaguarda: en producción exigir --force para evitar ejecuciones accidentales.
+        if (app()->environment('production') && ! $this->option('force')) {
+            $this->error('Entorno PRODUCCIÓN detectado. Ejecuta con --force para confirmar la instalación.');
+
+            return self::FAILURE;
+        }
+
         $this->info('Leyendo scripts SQL...');
 
         $tablaScript = File::get(database_path('sql/crear_tabla_saPreciosAlerta.sql'));
         $triggerScript = File::get(database_path('sql/crear_trigger_TR_CostoEntrada_AlertaPrecio.sql'));
 
-        $this->info('Ejecutando script de tabla saPreciosAlerta...');
+        // 1) Tabla: el script es idempotente y NO destructivo (solo crea si no existe).
+        $this->info('Ejecutando script de tabla saPreciosAlerta (idempotente, no destructivo)...');
 
         try {
             DB::connection('sqlsrv')->unprepared($tablaScript);
-            $this->info('✓ Tabla saPreciosAlerta creada exitosamente');
+            $this->info('✓ Tabla saPreciosAlerta verificada/creada exitosamente');
         } catch (\Exception $e) {
             $this->error('✗ Error al crear tabla: '.$e->getMessage());
+
             return self::FAILURE;
         }
 
-        $this->info('Ejecutando DROP del trigger (si existe)...');
+        // 2) Trigger: el script hace DROP TRIGGER IF EXISTS + CREATE (idempotente).
+        //    Recrear el trigger NO borra datos; solo reemplaza la definición.
+        $this->info('Ejecutando script del trigger TR_CostoEntrada_AlertaPrecio (idempotente)...');
 
         try {
-            $dropTrigger = "IF OBJECT_ID('dbo.TR_CostoEntrada_AlertaPrecio', 'TR') IS NOT NULL
-                DROP TRIGGER dbo.TR_CostoEntrada_AlertaPrecio;";
-            DB::connection('sqlsrv')->unprepared($dropTrigger);
-            $this->info('✓ DROP trigger ejecutado');
-        } catch (\Exception $e) {
-            $this->error('✗ Error en DROP trigger: '.$e->getMessage());
-            return self::FAILURE;
-        }
-
-        $this->info('Ejecutando CREATE del trigger TR_CostoEntrada_AlertaPrecio...');
-
-        try {
-            $createTrigger = "CREATE TRIGGER dbo.TR_CostoEntrada_AlertaPrecio
-            ON dbo.saCostoHistoricoEntrada
-            AFTER INSERT
-            AS
-            BEGIN
-                SET NOCOUNT ON;
-
-                INSERT INTO dbo.saPreciosAlerta (cod_costo_historico_entrada, fecha_alerta, procesado)
-                SELECT cod_costo_historico_entrada, GETDATE(), 0
-                FROM inserted;
-            END;";
-            DB::connection('sqlsrv')->unprepared($createTrigger);
+            DB::connection('sqlsrv')->unprepared($triggerScript);
             $this->info('✓ Trigger TR_CostoEntrada_AlertaPrecio creado exitosamente');
         } catch (\Exception $e) {
             $this->error('✗ Error al crear trigger: '.$e->getMessage());
+
             return self::FAILURE;
         }
 
         $this->newLine();
         $this->info('Arquitectura híbrida instalada correctamente.');
-        $this->line('- Tabla: dbo.saPreciosAlerta');
+        $this->line('- Tabla: dbo.saPreciosAlerta (datos existentes preservados)');
         $this->line('- Trigger: TR_CostoEntrada_AlertaPrecio ON dbo.saCostoHistoricoEntrada');
 
         return self::SUCCESS;
