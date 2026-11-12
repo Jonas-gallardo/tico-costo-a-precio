@@ -42,6 +42,10 @@ class PreciosController extends Controller
 
     /**
      * Ejecuta el motor en modo escritura y vuelve al dashboard.
+     *
+     * Siempre se usa modo escaneo (anti-join) para que el botón procese tanto
+     * las alertas nuevas del trigger como los costos históricos anteriores a
+     * su instalación.
      */
     public function recalcular(): RedirectResponse
     {
@@ -52,7 +56,7 @@ class PreciosController extends Controller
         }
 
         try {
-            $resultado = $this->service->procesar(false);
+            $resultado = $this->service->conModoEscaneo()->procesar(false);
 
             $insertados = (int) ($resultado['insertados'] ?? 0);
             $cerrados = (int) ($resultado['cerrados'] ?? 0);

@@ -17,6 +17,11 @@ Artisan::command('inspire', function () {
 | Ejecuta el motor cada 1 minuto en modo escritura (sin --dry-run).
 | Fase 6: Arquitectura híbrida con trigger para respuesta casi en tiempo real.
 |
+| Se usa SIEMPRE --scan-mode (anti-join) como red de seguridad: procesa los
+| costos históricos anteriores al trigger y también cualquier alerta que el
+| trigger no haya podido registrar. El trigger sigue activo, pero la verdad
+| operativa la determina el escaneo general.
+|
 | withoutOverlapping(10): si una corrida tarda más de 1 minuto, la
 | siguiente no se dispara. El bloqueo expira a los 10 minutos para que
 | un proceso que muera de forma anormal no bloquee el scheduler todo el día.
@@ -28,7 +33,7 @@ Artisan::command('inspire', function () {
 |
 */
 
-Schedule::command('precios:recalcular')
+Schedule::command('precios:recalcular --scan-mode')
     ->everyMinute()
     ->withoutOverlapping(10)
     ->before(function (): void {

@@ -17,7 +17,7 @@ class RecalcularPrecios extends Command
                             {--tipo-doc= : Tipo de documento del histórico (PROV, PROC, REPO...). Por defecto PROFIT_TIPO_DOC}
                             {--co-precio= : Filtra por código de precio (01, 02, 03, 04)}
                             {--limit= : Máximo de registros a consultar}
-                            {--scan-mode : Usa modo escaneo (anti-join) en lugar de modo alerta (trigger). Fallback si trigger no está instalado}';
+                            {--scan-mode : Usa modo escaneo (anti-join) en lugar de modo alerta (trigger). Es el modo del botón web y del scheduler}';
 
     /**
      * @var string
@@ -84,6 +84,7 @@ class RecalcularPrecios extends Command
             $this->line('Registros pendientes: '.$resultado['total_pendientes']);
             $this->line('Insertados: '.$resultado['insertados']);
             $this->line('Vigencias cerradas (hasta = NOW()): '.$resultado['cerrados']);
+            $this->line('Alertas marcadas como procesadas: '.$resultado['alertas_procesadas']);
             $this->line('Duración: '.$resultado['duracion_ms'].' ms');
 
             return self::SUCCESS;

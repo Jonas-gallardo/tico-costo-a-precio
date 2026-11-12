@@ -21,9 +21,11 @@ use Illuminate\Support\Facades\Log;
  *     dentro de la MISMA transacción.
  *
  * Fase 6 (Arquitectura Híbrida):
- *   - Modo alerta (default): lee desde dbo.saPreciosAlerta donde procesado=0.
- *   - Modo escaneo (fallback): usa anti-join original si trigger no está instalado.
- *   - Marca alertas como procesadas=1 después de insertar precio.
+ *   - Modo alerta: lee desde dbo.saPreciosAlerta donde procesado=0.
+ *   - Modo escaneo: anti-join general; es el modo operativo del botón web y
+ *     del scheduler porque también detecta costos anteriores al trigger.
+ *   - Ambos modos marcan las alertas como procesado=1. En modo escaneo se
+ *     limpian todas las alertas pendientes después de una corrida exitosa.
  *
  * Decisiones acordadas con el cliente:
  *   - Se ignora la validación de topes/políticas (NMMI, NMMS, NRA) del SP.
@@ -53,6 +55,17 @@ class RecalcularPreciosService
     public function modoEscaneo(): bool
     {
         return $this->modoEscaneo;
+    }
+
+    /**
+     * Devuelve una instancia equivalente forzando el modo de detección.
+     *
+     * Se usa desde el botón web y el scheduler para garantizar que ambos
+     * caminos operativos trabajen siempre con el anti-join (modo escaneo).
+     */
+    public function conModoEscaneo(bool $modoEscaneo = true): self
+    {
+        return new self($this->connection, $this->tipoDoc, $modoEscaneo);
     }
 
     /**
@@ -237,6 +250,7 @@ class RecalcularPreciosService
                 'total_pendientes' => $pendientes->count(),
                 'insertados' => 0,
                 'cerrados' => 0,
+                'alertas_procesadas' => 0,
                 'registros' => $pendientes,
             ];
         } else {
@@ -251,6 +265,8 @@ class RecalcularPreciosService
                     $ahora = Carbon::now();
                     $insertados = 0;
                     $cerrados = 0;
+                    $alertasProcesadas = 0;
+                    $costosProcesados = [];
 
                     foreach ($pendientes as $fila) {
                         $precio = (float) $fila->precio_calculado;
@@ -258,9 +274,13 @@ class RecalcularPreciosService
                         $cerrados += $this->cerrarVigenciaAnterior($fila, $ahora);
                         $this->insertarPrecio($fila, $precio, $ahora);
 
-                        // Si estamos en modo alerta, marcar como procesada
+                        // En modo alerta cada alerta se cierra individualmente.
                         if (! $usarModoEscaneo && isset($fila->alerta_id)) {
-                            $this->marcarAlertaProcesada($fila->alerta_id);
+                            $alertasProcesadas += $this->marcarAlertaProcesada((int) $fila->alerta_id);
+                        }
+
+                        if ($usarModoEscaneo) {
+                            $costosProcesados[] = (string) $fila->id_costo;
                         }
 
                         $insertados++;
@@ -274,6 +294,20 @@ class RecalcularPreciosService
                         ]);
                     }
 
+                    // En una corrida completa el escaneo es la fuente de
+                    // verdad: cualquier alerta pendiente (incluso de costos
+                    // antiguos o de artículos ya cubiertos) se marca para no
+                    // dejar basura. Si hay filtros (--co-precio / --limit),
+                    // solo se cierran las alertas de los costos procesados.
+                    if ($usarModoEscaneo) {
+                        $corridaCompleta = ($coPrecio === null || $coPrecio === '')
+                            && ($limit === null || $limit <= 0);
+
+                        $alertasProcesadas = $this->marcarAlertasProcesadas(
+                            $corridaCompleta ? null : $costosProcesados
+                        );
+                    }
+
                     return [
                         'dry_run' => false,
                         'tipo_doc' => $tipoDoc,
@@ -281,6 +315,7 @@ class RecalcularPreciosService
                         'total_pendientes' => $pendientes->count(),
                         'insertados' => $insertados,
                         'cerrados' => $cerrados,
+                        'alertas_procesadas' => $alertasProcesadas,
                         'registros' => $pendientes,
                     ];
                 });
@@ -294,6 +329,7 @@ class RecalcularPreciosService
             'total_pendientes' => $resultado['total_pendientes'],
             'insertados' => $resultado['insertados'],
             'cerrados' => $resultado['cerrados'],
+            'alertas_procesadas' => $resultado['alertas_procesadas'],
             'duracion_ms' => $duracion,
         ]);
 
@@ -365,13 +401,50 @@ class RecalcularPreciosService
     }
 
     /**
-     * Marca una alerta como procesada.
+     * Marca una alerta como procesada. Devuelve las filas afectadas.
      */
-    private function marcarAlertaProcesada(int $alertaId): void
+    private function marcarAlertaProcesada(int $alertaId): int
     {
-        DB::connection($this->connection())
+        return DB::connection($this->connection())
             ->table('dbo.saPreciosAlerta')
             ->where('id', $alertaId)
             ->update(['procesado' => 1]);
+    }
+
+    /**
+     * Marca alertas pendientes como procesadas.
+     *
+     * Si $costos es null se limpian todas (corrida completa). Si se pasa una
+     * lista, solo se cierran las alertas de esos costos (corridas filtradas).
+     *
+     * El modo escaneo no depende de la tabla de alertas, así que si la tabla
+     * no existe (trigger aún no instalado) el proceso de precios NO debe
+     * fallar por esta limpieza.
+     *
+     * @param  array<int, string>|null  $costos
+     */
+    private function marcarAlertasProcesadas(?array $costos = null): int
+    {
+        if ($costos === []) {
+            return 0;
+        }
+
+        try {
+            $query = DB::connection($this->connection())
+                ->table('dbo.saPreciosAlerta')
+                ->where('procesado', 0);
+
+            if ($costos !== null) {
+                $query->whereIn('cod_costo_historico_entrada', $costos);
+            }
+
+            return $query->update(['procesado' => 1]);
+        } catch (\Throwable $e) {
+            Log::warning('recalcular-precios: no se pudieron marcar las alertas', [
+                'mensaje' => $e->getMessage(),
+            ]);
+
+            return 0;
+        }
     }
 }
