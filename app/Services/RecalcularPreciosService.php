@@ -108,7 +108,10 @@ class RecalcularPreciosService
             ])
             ->where('alerta.procesado', 0)
             ->where('h.tipo_doc', $tipoDoc)
-            ->where('a.anulado', 0);
+            ->where('a.anulado', 0)
+            // Sin margen no hay precio de venta posible: si monto_min es 0 o
+            // NULL, el cálculo dejaría precio = costo. Se ignora el producto.
+            ->where('m.monto_min', '>', 0);
 
         if ($coPrecio !== null && $coPrecio !== '') {
             $query->where('m.co_precio', $coPrecio);
@@ -126,8 +129,13 @@ class RecalcularPreciosService
      *
      * Se considera pendiente cuando no existe un precio vigente (hasta NULL)
      * para el mismo (co_art, co_precio) creado después de la fecha de
-     * registro del costo. Además, solo se devuelve el costo más reciente
-     * por artículo y tipo de documento.
+     * registro del costo y después de la última modificación del margen.
+     * Así, si el margen cambió luego de crear el precio, el precio viejo se
+     * cierra y se genera uno nuevo con el margen actual.
+     *
+     * Los artículos con margen 0 o nulo se ignoran para no generar precios
+     * iguales al costo. Además, solo se devuelve el costo más reciente por
+     * artículo y tipo de documento.
      *
      * @return Collection<int, object>
      */
@@ -161,6 +169,9 @@ class RecalcularPreciosService
             ])
             ->where('h.tipo_doc', $tipoDoc)
             ->where('a.anulado', 0)
+            // Sin margen no hay precio de venta posible: si monto_min es 0 o
+            // NULL, el cálculo dejaría precio = costo. Se ignora el producto.
+            ->where('m.monto_min', '>', 0)
             // Un costo está cubierto si existe un precio vigente generado
             // DESPUÉS de que el costo fue registrado. Si el precio es más
             // antiguo que el costo, hay que recalcular.
@@ -168,10 +179,21 @@ class RecalcularPreciosService
                 $subquery
                     ->select(DB::raw('1'))
                     ->from('dbo.saArtPrecio as p')
+                    // Se une saArtMargen dentro del anti-join para comparar
+                    // la última modificación del margen contra la creación
+                    // del precio vigente.
+                    ->leftJoin('dbo.saArtMargen as pm', function ($join): void {
+                        $join->on('pm.co_art', '=', 'p.co_art')
+                            ->on('pm.co_precio', '=', 'p.co_precio');
+                    })
                     ->whereColumn('p.co_art', 'a.co_art')
                     ->whereColumn('p.co_precio', 'm.co_precio')
                     ->whereNull('p.hasta')
-                    ->whereColumn('p.desde', '>=', 'h.fecha_registro');
+                    ->whereColumn('p.desde', '>=', 'h.fecha_registro')
+                    // Si el margen se modificó después de crear el precio,
+                    // el precio quedó obsoleto: el costo vuelve a estar
+                    // pendiente y el proceso cerrará la vigencia vieja.
+                    ->whereColumn('p.desde', '>=', 'pm.fe_us_mo');
             })
             // Solo se procesa el costo más reciente por artículo y tipo de
             // documento, para no insertar dos precios con el mismo instante.
