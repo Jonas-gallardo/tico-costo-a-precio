@@ -39,8 +39,7 @@ class RecalcularPreciosService
         private readonly ?string $connection = null,
         private readonly ?string $tipoDoc = null,
         private readonly bool $modoEscaneo = false,
-    ) {
-    }
+    ) {}
 
     public function connection(): string
     {
@@ -358,6 +357,126 @@ class RecalcularPreciosService
         $resultado['duracion_ms'] = $duracion;
 
         return $resultado;
+    }
+
+    /**
+     * Repara precios vigentes que quedaron iguales al costo por margen 0.
+     *
+     * Busca en saArtPrecio las vigencias abiertas (hasta IS NULL) cuyo monto
+     * coincide con el último costo de entrada del artículo (del tipo de
+     * documento configurado, normalmente PROV) y cuyo margen actual en
+     * saArtMargen es mayor a 0. Para cada caso cierra la vigencia vieja y
+     * crea el precio con la fórmula correcta.
+     *
+     * @return array{dry_run: bool, reparados: int, detalles: array<int, array<string, mixed>>}
+     */
+    public function repararPreciosIgualesAlCosto(bool $dryRun = false): array
+    {
+        $filas = $this->obtenerPreciosIgualesAlCosto();
+        $detalles = [];
+
+        foreach ($filas as $fila) {
+            $detalles[] = [
+                'co_art' => trim((string) $fila->co_art),
+                'co_precio' => trim((string) $fila->co_precio),
+                'art_des' => (string) $fila->art_des,
+                'costo' => (float) $fila->costo,
+                'monto_min' => (float) $fila->monto_min,
+                'precio_actual' => (float) $fila->precio_actual,
+                'precio_nuevo' => $this->calcularPrecio(
+                    (float) $fila->costo,
+                    (float) $fila->monto_min
+                ),
+            ];
+        }
+
+        if ($dryRun || $detalles === []) {
+            return [
+                'dry_run' => $dryRun,
+                'reparados' => count($detalles),
+                'detalles' => $detalles,
+            ];
+        }
+
+        DB::connection($this->connection())->transaction(function () use ($filas, $detalles): void {
+            $ahora = Carbon::now();
+
+            foreach ($filas as $fila) {
+                $precioNuevo = $this->calcularPrecio(
+                    (float) $fila->costo,
+                    (float) $fila->monto_min
+                );
+
+                $this->cerrarVigenciaAnterior($fila, $ahora);
+                $this->insertarPrecio($fila, $precioNuevo, $ahora);
+            }
+
+            Log::info('precios: reparación de precios iguales al costo', [
+                'reparados' => count($filas),
+                'registros' => $detalles,
+            ]);
+        });
+
+        return [
+            'dry_run' => false,
+            'reparados' => count($detalles),
+            'detalles' => $detalles,
+        ];
+    }
+
+    /**
+     * Precios vigentes cuyo monto es igual al último costo del artículo.
+     *
+     * @return Collection<int, object>
+     */
+    private function obtenerPreciosIgualesAlCosto(): Collection
+    {
+        $tipoDoc = $this->tipoDoc();
+
+        return DB::connection($this->connection())
+            ->table('dbo.saArtPrecio as p')
+            ->join('dbo.saArticulo as a', 'a.co_art', '=', 'p.co_art')
+            ->join('dbo.saArtMargen as m', function ($join): void {
+                $join->on('m.co_art', '=', 'p.co_art')
+                    ->on('m.co_precio', '=', 'p.co_precio');
+            })
+            ->join('dbo.saCostoHistoricoEntrada as h', 'h.cod_articulo_rowguid', '=', 'a.rowguid')
+            ->where('h.tipo_doc', $tipoDoc)
+            ->where('a.anulado', 0)
+            ->whereNull('p.hasta')
+            ->where('m.monto_min', '>', 0)
+            ->whereRaw('ABS(p.monto - h.costo) < 0.00001')
+            // Solo el costo más reciente por artículo y tipo de documento.
+            ->whereNotExists(function ($subquery): void {
+                $subquery
+                    ->select(DB::raw('1'))
+                    ->from('dbo.saCostoHistoricoEntrada as h2')
+                    ->whereColumn('h2.cod_articulo_rowguid', 'h.cod_articulo_rowguid')
+                    ->whereColumn('h2.tipo_doc', 'h.tipo_doc')
+                    ->where(function ($query): void {
+                        $query
+                            ->whereColumn('h2.fecha_registro', '>', 'h.fecha_registro')
+                            ->orWhere(function ($query): void {
+                                $query
+                                    ->whereColumn('h2.fecha_registro', '=', 'h.fecha_registro')
+                                    ->whereColumn('h2.cod_costo_historico_entrada', '>', 'h.cod_costo_historico_entrada');
+                            });
+                    });
+            })
+            ->select([
+                'p.co_art',
+                'p.co_precio',
+                'a.art_des',
+                'h.costo',
+                'm.monto_min',
+                'p.monto as precio_actual',
+                'p.desde',
+            ])
+            ->orderBy('p.co_art')
+            ->orderBy('p.co_precio')
+            ->get()
+            ->unique(fn (object $fila): string => trim((string) $fila->co_art).'|'.trim((string) $fila->co_precio))
+            ->values();
     }
 
     /**
