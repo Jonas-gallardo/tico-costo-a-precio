@@ -67,7 +67,7 @@ class ProbarTriggerHibrido extends Command
             ->where('co_art', $articulo->co_art)
             ->where('co_precio', $margen->co_precio)
             ->whereNull('hasta')
-            ->update(['hasta' => now()->subMinute()]);
+            ->update(['hasta' => DB::raw('DATEADD(minute, -1, GETDATE())')]);
 
         $this->newLine();
         $this->info('Insertando costo de prueba en saCostoHistoricoEntrada...');
@@ -83,8 +83,8 @@ class ProbarTriggerHibrido extends Command
                 'cantidad_usada' => 0,
                 'costo' => 100.50,
                 'costo_pro' => 0,
-                'fecha_emision' => now(),
-                'fecha_registro' => now(),
+                'fecha_emision' => DB::raw('GETDATE()'),
+                'fecha_registro' => DB::raw('GETDATE()'),
                 'fecha_recepcion' => null,
                 'rengNum' => 1,
             ]);

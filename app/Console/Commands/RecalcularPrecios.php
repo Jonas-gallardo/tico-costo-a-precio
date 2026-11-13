@@ -83,7 +83,7 @@ class RecalcularPrecios extends Command
             $this->line('Conexión: '.$service->connection());
             $this->line('Registros pendientes: '.$resultado['total_pendientes']);
             $this->line('Insertados: '.$resultado['insertados']);
-            $this->line('Vigencias cerradas (hasta = NOW()): '.$resultado['cerrados']);
+            $this->line('Vigencias cerradas (hasta = GETDATE()): '.$resultado['cerrados']);
             $this->line('Alertas marcadas como procesadas: '.$resultado['alertas_procesadas']);
             $this->line('Duración: '.$resultado['duracion_ms'].' ms');
 

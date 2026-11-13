@@ -2,8 +2,6 @@
 
 namespace App\Services;
 
-use DateTimeInterface;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -17,7 +15,7 @@ use Illuminate\Support\Facades\Log;
  *     generado después de su fecha de registro, o si es el costo más
  *     reciente del artículo.
  *   - Cálculo directo: precio = costo + (costo * monto_min / 100), 2 decimales.
- *   - Cierre de vigencia anterior (hasta = NOW()) e INSERT del nuevo precio
+ *   - Cierre de vigencia anterior (hasta = GETDATE()) e INSERT del nuevo precio
  *     dentro de la MISMA transacción.
  *
  * Fase 6 (Arquitectura Híbrida):
@@ -283,7 +281,6 @@ class RecalcularPreciosService
                         : $this->costosPendientesAlerta($tipoDoc, $coPrecio, $limit);
                     $this->anotarPrecioCalculado($pendientes);
 
-                    $ahora = Carbon::now();
                     $insertados = 0;
                     $cerrados = 0;
                     $alertasProcesadas = 0;
@@ -292,8 +289,8 @@ class RecalcularPreciosService
                     foreach ($pendientes as $fila) {
                         $precio = (float) $fila->precio_calculado;
 
-                        $cerrados += $this->cerrarVigenciaAnterior($fila, $ahora);
-                        $this->insertarPrecio($fila, $precio, $ahora);
+                        $cerrados += $this->cerrarVigenciaAnterior($fila);
+                        $this->insertarPrecio($fila, $precio);
 
                         // En modo alerta cada alerta se cierra individualmente.
                         if (! $usarModoEscaneo && isset($fila->alerta_id)) {
@@ -399,16 +396,14 @@ class RecalcularPreciosService
         }
 
         DB::connection($this->connection())->transaction(function () use ($filas, $detalles): void {
-            $ahora = Carbon::now();
-
             foreach ($filas as $fila) {
                 $precioNuevo = $this->calcularPrecio(
                     (float) $fila->costo,
                     (float) $fila->monto_min
                 );
 
-                $this->cerrarVigenciaAnterior($fila, $ahora);
-                $this->insertarPrecio($fila, $precioNuevo, $ahora);
+                $this->cerrarVigenciaAnterior($fila);
+                $this->insertarPrecio($fila, $precioNuevo);
             }
 
             Log::info('precios: reparación de precios iguales al costo', [
@@ -497,24 +492,30 @@ class RecalcularPreciosService
     /**
      * Cierra la vigencia del precio anterior para el mismo artículo y código.
      * Devuelve la cantidad de filas afectadas.
+     *
+     * Se usa GETDATE() de SQL Server para que la fecha la genere el motor y
+     * no se envíe un string desde PHP que pueda fallar en la conversión.
      */
-    private function cerrarVigenciaAnterior(object $fila, DateTimeInterface $ahora): int
+    private function cerrarVigenciaAnterior(object $fila): int
     {
         return DB::connection($this->connection())
             ->table('dbo.saArtPrecio')
             ->where('co_art', $fila->co_art)
             ->where('co_precio', $fila->co_precio)
             ->whereNull('hasta')
-            ->update(['hasta' => $ahora]);
+            ->update(['hasta' => DB::raw('GETDATE()')]);
     }
 
     /**
      * Inserta el nuevo precio vigente.
      *
+     * Las fechas las genera SQL Server con GETDATE() para evitar problemas
+     * de formato/zona horaria entre PHP y SQL Server.
+     *
      * co_alma_calculado es una columna calculada (ISNULL(co_alma,'TODOS')),
      * por eso NO se incluye en el INSERT.
      */
-    private function insertarPrecio(object $fila, float $precio, DateTimeInterface $ahora): void
+    private function insertarPrecio(object $fila, float $precio): void
     {
         $usuario = (string) config('profit.usuario_sistema', 'PROFIT');
 
@@ -524,16 +525,16 @@ class RecalcularPreciosService
                 'co_art' => $fila->co_art,
                 'co_precio' => $fila->co_precio,
                 'co_alma' => null,
-                'desde' => $ahora,
+                'desde' => DB::raw('GETDATE()'),
                 'hasta' => null,
                 'monto' => $precio,
                 'precioOm' => (int) config('profit.precio_om', true),
                 'co_us_in' => $usuario,
                 'co_sucu_in' => null,
-                'fe_us_in' => $ahora,
+                'fe_us_in' => DB::raw('GETDATE()'),
                 'co_us_mo' => $usuario,
                 'co_sucu_mo' => null,
-                'fe_us_mo' => $ahora,
+                'fe_us_mo' => DB::raw('GETDATE()'),
                 'revisado' => null,
                 'trasnfe' => null,
                 'co_mone' => config('profit.co_mone', 'USD'),
