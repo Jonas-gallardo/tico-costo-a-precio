@@ -42,11 +42,12 @@ return [
     | Códigos de precio (saTipoPrecio)
     |--------------------------------------------------------------------------
     |
-    | En esta base: 01 PROFORMA, 02 PROFORMA MAYOR, 03 FACTURA, 04 FACTURA MAYOR.
+    | En esta base: 01 PROFORMA, 02 PROFORMA MAYOR, 03 FACTURA, 04 FACTURA MAYOR,
+    | 05 a 08 listas adicionales (márgenes configurados en saArtMargen).
     |
     */
 
-    'precios' => ['01', '02', '03', '04'],
+    'precios' => ['01', '02', '03', '04', '05', '06', '07', '08'],
 
     /*
     |--------------------------------------------------------------------------

@@ -15,7 +15,7 @@ class RecalcularPrecios extends Command
     protected $signature = 'precios:recalcular
                             {--dry-run : Solo consulta y muestra los costos pendientes, sin escribir en saArtPrecio}
                             {--tipo-doc= : Tipo de documento del histórico (PROV, PROC, REPO...). Por defecto PROFIT_TIPO_DOC}
-                            {--co-precio= : Filtra por código de precio (01, 02, 03, 04)}
+                            {--co-precio= : Filtra por código de precio (01 a 08)}
                             {--limit= : Máximo de registros a consultar}
                             {--scan-mode : Usa modo escaneo (anti-join) en lugar de modo alerta (trigger). Es el modo del botón web y del scheduler}';
 
